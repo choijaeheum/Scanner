@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>영진제 2026 QR 스캐너</title>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+  :root { --bg:#f5f6fa; --card:#fff; --ink:#1d2433; --muted:#667085; --line:#e6e8ef;
+          --accent:#2f5bd3; --ok:#14804a; --okbg:#e3f5eb; --bad:#b42318; --badbg:#fdecea; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font-family:-apple-system,"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif; }
+  .wrap { max-width:460px; margin:0 auto; padding:14px 16px 40px; }
+  h1 { font-size:19px; margin:4px 0 12px; }
+  .card { background:var(--card); border-radius:14px; padding:16px; margin-bottom:12px;
+          box-shadow:0 1px 3px rgba(0,0,0,.07); }
+  .cam { position:relative; border-radius:14px; overflow:hidden; background:#000; aspect-ratio:1/1; }
+  .cam video { width:100%; height:100%; object-fit:cover; display:block; }
+  .cam .frame { position:absolute; inset:18%; border:3px solid rgba(255,255,255,.85); border-radius:16px; }
+  .cam .hint { position:absolute; left:0; right:0; bottom:10px; text-align:center; color:#fff;
+               font-size:14px; text-shadow:0 1px 3px rgba(0,0,0,.8); }
+  .banner { padding:20px 12px; border-radius:12px; font-size:24px; font-weight:800; text-align:center; }
+  .ok { background:var(--okbg); color:var(--ok); }
+  .bad { background:var(--badbg); color:var(--bad); }
+  .row { display:flex; justify-content:space-between; gap:12px; padding:9px 0;
+         border-bottom:1px solid var(--line); font-size:16px; }
+  .row span { color:var(--muted); }
+  .small { font-size:13px; color:var(--muted); line-height:1.5; }
+  .chk { display:flex; gap:8px; align-items:flex-start; line-height:1.5; font-size:14px; }
+  .chk input { margin-top:4px; }
+  input[type=text], input[type=password] { width:100%; padding:12px; font-size:16px;
+          border:1px solid #d0d5e0; border-radius:10px; }
+  button { width:100%; padding:14px; margin-top:10px; font-size:16px; font-weight:600;
+           border:0; border-radius:10px; background:var(--accent); color:#fff; }
+  button.sub { background:#667085; }
+  button:disabled { opacity:.5; }
+  .inline { display:grid; grid-template-columns:1fr auto; gap:8px; }
+  .inline button { margin-top:0; width:auto; padding:12px 16px; }
+  [hidden] { display:none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>영진제 2026 QR 스캐너</h1>
+
+  <div id="login" class="card" hidden>
+    <p class="small" style="margin-top:0">운영진 PIN을 입력하세요. 한 번 로그인하면 이 휴대폰에서는 다시 묻지 않습니다.</p>
+    <input type="password" id="pin" autocomplete="off">
+    <button id="pinBtn">로그인</button>
+  </div>
+
+  <div id="main" hidden>
+    <div class="card" style="padding:10px">
+      <div class="cam" id="camBox" hidden>
+        <video id="video" playsinline muted></video>
+        <div class="frame"></div>
+        <div class="hint" id="hint">QR을 네모 안에 맞춰 주세요</div>
+      </div>
+      <button id="camBtn">카메라 켜고 QR 스캔</button>
+    </div>
+
+    <div id="state" class="card small" hidden></div>
+
+    <div id="result" class="card" hidden>
+      <div id="banner" class="banner"></div>
+      <div class="row"><span>방문자</span><b id="rName"></b></div>
+      <div class="row"><span>성별</span><b id="rGender"></b></div>
+      <div class="row"><span>학교</span><b id="rSchool"></b></div>
+      <div class="row"><span>초대 학생</span><b id="rInviter"></b></div>
+      <div class="row"><span>입장 시각</span><b id="rEntered"></b></div>
+      <p class="small">학생증(실물 또는 모바일 학생증, 캡처본 불가)의 이름·학교와 대조하세요.</p>
+      <button id="checkBtn" hidden>입장 처리</button>
+      <button id="undoBtn" class="sub" hidden>방금 한 입장 처리 취소</button>
+    </div>
+
+    <div class="card">
+      <p style="margin:0 0 8px;font-weight:700">코드 직접 입력</p>
+      <div class="inline">
+        <input type="text" id="manual" maxlength="8" autocapitalize="characters" placeholder="예: K7Q2MXA9">
+        <button id="manualBtn">조회</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <label class="chk"><input type="checkbox" id="fastMode">
+        <span>빠른 모드: QR이 읽히면 바로 입장 처리합니다. 학생증을 먼저 확인한 뒤 비추세요.</span></label>
+      <button id="logoutBtn" class="sub">로그아웃</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ▼ 구글 웹 앱 주소(…/exec)
+  var API_URL = 'https://script.google.com/macros/s/AKfycbyAsI7SQ84z44-dpRqmlApFlhPauPvKPTxWWRuAbdmMdj7rwM_1lgFDu3rTjx4P5hSo9g/exec';
+
+  var memPin = '', current = '', justDone = false, busy = false;
+  var stream = null, scanning = false, detector = null, canvas = null, ctx = null;
+  var lastText = '', lastTime = 0;
+
+  function $(id) { return document.getElementById(id); }
+  function show(id, on) { $(id).hidden = !on; }
+  function getPin() { if (memPin) return memPin; try { return localStorage.getItem('yjPin') || ''; } catch (e) { return ''; } }
+  function setPin(p) { memPin = p; try { if (p) localStorage.setItem('yjPin', p); else localStorage.removeItem('yjPin'); } catch (e) {} }
+  function getFast() { try { return localStorage.getItem('yjFast') === '1'; } catch (e) { return false; } }
+  function setFast(on) { try { localStorage.setItem('yjFast', on ? '1' : '0'); } catch (e) {} }
+  function buzz(p) { try { if (navigator.vibrate) navigator.vibrate(p); } catch (e) {} }
+  function state(text) { var el = $('state'); el.textContent = text || ''; el.hidden = !text; }
+  function setBusy(b) { busy = b; ['checkBtn', 'undoBtn', 'manualBtn'].forEach(function (id) { $(id).disabled = b; }); }
+  function showLogin(on) { show('login', on); show('main', !on); if (on) stopCam(); }
+
+  // 구글 웹 앱 호출(본문을 일반 텍스트로 보내 추가 확인 요청 없이 전달)
+  function api(body) {
+    return fetch(API_URL, { method: 'POST', redirect: 'follow',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (d && d.error) throw new Error(d.error); return d; });
+  }
+  function fail(err) { setBusy(false); buzz([200, 100, 200]); state((err && err.message) || '연결에 실패했습니다. 인터넷 연결을 확인하세요.'); }
+
+  function extractCode(text) {
+    text = String(text || '').trim();
+    var m = text.match(/[?&]code=([A-Za-z0-9]{8})/);
+    if (m) return m[1].toUpperCase();
+    if (/^[A-Za-z0-9]{8}$/.test(text)) return text.toUpperCase();
+    return '';
+  }
+
+  /* ---------- 카메라 ---------- */
+  function startCam() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      state('이 브라우저는 카메라를 지원하지 않습니다. 크롬이나 사파리로 열어 주세요.'); return;
+    }
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
+      .then(function (s) {
+        stream = s; var v = $('video'); v.srcObject = s;
+        return v.play();
+      })
+      .then(function () {
+        show('camBox', true); $('camBtn').textContent = '카메라 끄기'; $('camBtn').className = 'sub';
+        scanning = true; state('');
+        if ('BarcodeDetector' in window) {
+          try { detector = new BarcodeDetector({ formats: ['qr_code'] }); } catch (e) { detector = null; }
+        }
+        tick();
+      })
+      .catch(function (e) {
+        state('카메라를 켜지 못했습니다. 주소창 옆 자물쇠에서 카메라 권한을 허용한 뒤 다시 누르세요. (' + e.name + ')');
+      });
+  }
+  function stopCam() {
+    scanning = false;
+    if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+    show('camBox', false); $('camBtn').textContent = '카메라 켜고 QR 스캔'; $('camBtn').className = '';
+  }
+  function readFrame(v) {
+    if (detector) {
+      return detector.detect(v).then(function (codes) { return codes.length ? codes[0].rawValue : ''; })
+        .catch(function () { detector = null; return ''; });
+    }
+    if (!window.jsQR) return Promise.resolve('');
+    if (!canvas) { canvas = document.createElement('canvas'); ctx = canvas.getContext('2d', { willReadFrequently: true }); }
+    var scale = Math.min(1, 720 / Math.max(v.videoWidth, v.videoHeight));
+    var w = Math.round(v.videoWidth * scale), h = Math.round(v.videoHeight * scale);
+    if (!w || !h) return Promise.resolve('');
+    canvas.width = w; canvas.height = h; ctx.drawImage(v, 0, 0, w, h);
+    var res = jsQR(ctx.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+    return Promise.resolve(res ? res.data : '');
+  }
+  function tick() {
+    if (!scanning) return;
+    var v = $('video');
+    if (busy || v.readyState < 2) { setTimeout(tick, 200); return; }
+    readFrame(v).then(function (text) {
+      if (text) onScan(text);
+      setTimeout(tick, 150);
+    });
+  }
+  function onScan(text) {
+    var now = Date.now();
+    if (text === lastText && now - lastTime < 4000) return; // 같은 QR 연속 인식 방지
+    lastText = text; lastTime = now;
+    var code = extractCode(text);
+    if (!code) { buzz([200, 100, 200]); state('영진제 초대장 QR이 아닙니다.'); return; }
+    lookup(code);
+  }
+
+  /* ---------- 조회·입장 처리 ---------- */
+  function lookup(code) {
+    current = code; justDone = false; setBusy(true);
+    state('확인 중… (' + code + ')');
+    api({ action: 'info', code: code, pin: getPin() }).then(function (info) {
+      if (info.pinError) { setPin(''); showLogin(true); setBusy(false); alert('운영진 PIN이 올바르지 않습니다.'); return; }
+      draw(info);
+      if (info.valid && info.status === '등록' && getFast()) doCheckIn();
+    }).catch(fail);
+  }
+  function draw(info) {
+    setBusy(false); state('');
+    var b = $('banner'), st = info.status;
+    show('undoBtn', false); show('checkBtn', false);
+    if (!info.valid) { b.textContent = st === '회수' ? '회수된 초대장 · 입장 불가' : '유효하지 않은 초대장'; b.className = 'banner bad'; buzz([200, 100, 200]); }
+    else if (st === '등록') { b.textContent = '입장 가능 · 학생증 확인'; b.className = 'banner ok'; show('checkBtn', !getFast()); }
+    else if (st === '입장완료') {
+      if (justDone) { b.textContent = '입장 완료'; b.className = 'banner ok'; }
+      else { b.textContent = '이미 입장 처리됨 · 재입장 불가'; b.className = 'banner bad'; buzz([200, 100, 200]); }
+    } else { b.textContent = '미등록 초대장 · 입장 불가'; b.className = 'banner bad'; buzz([200, 100, 200]); }
+    $('rName').textContent = info.visitorName || '-';
+    $('rGender').textContent = info.visitorGender || '-';
+    $('rSchool').textContent = info.visitorSchool || '-';
+    $('rInviter').textContent = info.inviter || '-';
+    $('rEntered').textContent = info.enteredAt || '-';
+    show('result', true);
+  }
+  function doCheckIn() {
+    setBusy(true);
+    api({ action: 'checkin', code: current, pin: getPin() }).then(function (r) {
+      justDone = !!r.ok; draw(r.info);
+      if (r.ok) { buzz(150); show('undoBtn', true); }
+    }).catch(fail);
+  }
+
+  $('camBtn').onclick = function () { if (stream) stopCam(); else startCam(); };
+  $('checkBtn').onclick = doCheckIn;
+  $('undoBtn').onclick = function () {
+    if (!confirm('방금 한 입장 처리를 취소할까요?')) return;
+    setBusy(true);
+    api({ action: 'undo', code: current, pin: getPin() }).then(function (info) { justDone = false; draw(info); }).catch(fail);
+  };
+  $('manualBtn').onclick = function () {
+    var code = extractCode($('manual').value);
+    if (!code) { alert('8자리 코드를 정확히 입력하세요.'); return; }
+    $('manual').value = ''; lookup(code);
+  };
+  $('fastMode').onchange = function () { setFast(this.checked); };
+  $('pinBtn').onclick = function () {
+    var p = $('pin').value.trim(); if (!p) return;
+    $('pin').value = ''; $('pinBtn').disabled = true;
+    api({ action: 'login', pin: p }).then(function (r) {
+      $('pinBtn').disabled = false;
+      if (!r.ok) { alert('PIN이 올바르지 않습니다.'); return; }
+      setPin(p); showLogin(false);
+    }).catch(function (e) { $('pinBtn').disabled = false; alert(e.message || '연결에 실패했습니다.'); });
+  };
+  $('logoutBtn').onclick = function () { setPin(''); show('result', false); showLogin(true); };
+
+  $('fastMode').checked = getFast();
+  showLogin(!getPin());
+</script>
+</body>
+</html>
